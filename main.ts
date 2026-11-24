@@ -82,7 +82,7 @@
 // bad build fails loudly here instead of silently failing the gate on
 // the server.
 
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 // ---------------------------------------------------------------------------
@@ -160,13 +160,25 @@ interface GateFailure {
 }
 
 /**
+ * Count the characters of a string the way the sealed scorer does: in
+ * Unicode code points, not UTF-16 code units. For our pure-ASCII reply
+ * the two agree, but counting code points keeps the gate honest if a
+ * future edit ever introduces a character outside the BMP.
+ */
+function countCharacters(text: string): number {
+  return [...text].length;
+}
+
+/**
  * Check that a candidate reply passes the competition gate.
  *
  * Mirrors the sealed scorer's rule exactly: UTF-8 text of 1 to 159
  * characters, not only white space. The single-line requirement is an
  * additional guard of our own — the brief asks for a one-line reply, and
  * a stray newline would make the file read as two lines to a human even
- * if the character count still passed.
+ * if the character count still passed. The ASCII-only rule is another
+ * guard of our own: the program promises the byte count on disk equals
+ * the character count, and that promise only holds for pure ASCII.
  *
  * Returns the list of failures, empty when the reply is valid.
  */
@@ -175,7 +187,7 @@ function validateReply(reply: string): GateFailure[] {
 
   // Length is counted in Unicode code points, matching how a UTF-8
   // scorer counts characters (and, for our pure-ASCII reply, bytes).
-  const length = [...reply].length;
+  const length = countCharacters(reply);
 
   if (length < MIN_CHARACTERS) {
     failures.push({
@@ -188,6 +200,13 @@ function validateReply(reply: string): GateFailure[] {
     failures.push({
       rule: "max-length",
       detail: `reply is ${length} characters, above the maximum of ${MAX_CHARACTERS}`,
+    });
+  }
+
+  if (/[^\x00-\x7F]/.test(reply)) {
+    failures.push({
+      rule: "ascii-only",
+      detail: "reply contains a non-ASCII character, so byte count would exceed character count",
     });
   }
 
@@ -231,6 +250,38 @@ function resolveOutputDir(): string {
 // Main
 // ---------------------------------------------------------------------------
 
+/**
+ * Write the validated reply to the output directory and verify the
+ * bytes on disk.
+ *
+ * Writes exactly the reply — no trailing newline, no header, no extra
+ * whitespace — so the file on disk is the reply and nothing else, then
+ * reads the file back and confirms its byte length matches the reply's
+ * character count. The read-back catches a partial write or an
+ * encoding surprise before the program reports success; a mismatch is
+ * a bug in this program, so it fails loudly instead of handing the
+ * grader a file that does not match the validated reply.
+ *
+ * Returns the path of the file written.
+ */
+function writeReply(outputDir: string, reply: string): string {
+  mkdirSync(outputDir, { recursive: true });
+  const outputPath = join(outputDir, OUTPUT_FILENAME);
+  writeFileSync(outputPath, reply, { encoding: "utf8" });
+
+  const written = readFileSync(outputPath, { encoding: "utf8" });
+  if (written !== reply) {
+    throw new Error(
+      `verification failed: ${outputPath} does not match the validated reply`,
+    );
+  }
+  return outputPath;
+}
+
+// ---------------------------------------------------------------------------
+// Main
+// ---------------------------------------------------------------------------
+
 function main(): void {
   // 1. Compose the reply from its beats.
   const reply = composeAutoReply();
@@ -246,16 +297,12 @@ function main(): void {
     process.exit(1);
   }
 
-  // 3. Write exactly the reply bytes — no trailing newline, no header,
-  //    no extra whitespace — so the file on disk is the reply and
-  //    nothing else.
+  // 3. Write exactly the reply bytes and verify them on disk.
   const outputDir = resolveOutputDir();
-  mkdirSync(outputDir, { recursive: true });
-  const outputPath = join(outputDir, OUTPUT_FILENAME);
-  writeFileSync(outputPath, reply, { encoding: "utf8" });
+  const outputPath = writeReply(outputDir, reply);
 
   // 4. Report what was written, so a local run shows its result.
-  console.log(`wrote ${outputPath} (${[...reply].length} characters)`);
+  console.log(`wrote ${outputPath} (${countCharacters(reply)} characters)`);
   console.log(reply);
 }
 
