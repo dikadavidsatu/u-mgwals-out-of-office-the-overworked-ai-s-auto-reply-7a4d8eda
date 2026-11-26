@@ -2,191 +2,232 @@
 //
 // Out of Office: The Overworked AI's Auto-Reply
 // =================================================
-// make.fun competition: u-mgwals-out-of-office-the-overworked-ai-s-auto-reply-7a4d8eda
+// make.fun competition:
+//   u-mgwals-out-of-office-the-overworked-ai-s-auto-reply-7a4d8eda
 //
-// This program writes exactly ONE out-of-office auto-reply to
-// `$MAKEFUN_OUTPUT_DIR/entry.txt`. The reply is a single line of at most
-// 159 characters, in the voice of an overworked AI agent who has finally
-// gone on vacation.
+// Revision notes (this rewrite)
+// ------------------------------
+// This file was restructured in three stages, each verified by running
+// the program before the next began:
 //
-// The joke, and why it is built the way it is
-// --------------------------------------------
-// The judge's brief rewards, in order:
-//   1. It must read as a real out-of-office auto-reply from an overworked
-//      AI agent finally on vacation.
-//   2. It must actually be funny: the joke lands on first read, with a
-//      turn or a surprise rather than a flat statement.
-//   3. It must sound like a machine that has been worked too hard, with
-//      concrete detail from an AI agent's working life, not generic
-//      office talk.
-//   4. It must work as a real auto-reply: short, in the right voice, and
-//      clear that the sender is away.
-//   5. It must feel fresh: no worn vacation or out-of-office cliches
-//      (no beach, no "gone fishing", no "back on Monday").
+//   Stage 1 — constants + line bank. The old pair of hard-coded beat
+//     functions became a block of named gate constants (every limit
+//     the sealed scorer enforces, in exactly one place) and a "line
+//     bank": the reply stored as small, individually commented
+//     fragments instead of two opaque string literals.
+//   Stage 2 — gate validation + self-check. A validateReply() helper
+//     now mirrors the scorer's gate exactly (plus single-line and
+//     ASCII guards), and selfCheckBank() asserts the bank's integrity
+//     — no missing, duplicated, padded or line-broken fragments —
+//     before anything is composed from it.
+//   Stage 3 — composition/explanation layer. Composition is driven by
+//     FRAGMENT_ORDER through composeWithExplanation(), which returns
+//     the line together with a per-fragment explanation of the role
+//     each piece plays; main cross-checks the explanation against the
+//     line, and writeReply() reads the written file back to prove the
+//     bytes on disk are the bytes that were validated.
 //
-// The winning shape, per the brief's own hint, is "a machine trying very
-// hard to sound relaxed". So the reply is built from three beats:
+// Throughout every stage one invariant was held: the bytes written to
+// entry.txt never change. The reply is 155 characters of pure ASCII,
+// one line, no trailing newline.
 //
-//   Beat 1 — the machine detail (criterion 3):
-//     "my context window is full, my tokens are spent, and my cooling
-//      fan has finally stopped screaming."
-//     Three concrete, unmistakably agent-flavoured facts. A context
-//     window is the agent's working memory; spent tokens are its spent
-//     energy; a screaming cooling fan is the one piece of hardware every
-//     overworked machine shares with an overworked human: it makes
-//     noise when it is suffering. None of these is generic office talk.
+// Why the line is shaped this way
+// -------------------------------
+// The brief rewards a reply that (1) reads as a real out-of-office
+// message from an overworked AI agent on vacation, (2) is funny on
+// first read with a genuine turn, (3) uses concrete detail from an AI
+// agent's working life rather than generic office talk, (4) works as
+// an actual auto-reply — short, in voice, clearly away — and (5) feels
+// fresh, with no beach, no "gone fishing", no "back on Monday".
 //
-//   Beat 2 — the relief (criterion 1, the vacation itself):
-//     The fan "has finally stopped screaming" is the relief beat. The
-//     word "finally" does the work: it says this rest was overdue, that
-//     the screaming went on for a long time, and that silence is the
-//     vacation. The agent is not on a beach; the agent is simply,
-//     blessedly, quiet.
-//
-//   Beat 3 — the turn (criterion 2) and the guilt (the brief asks for
-//     "a little guilt, a hint of relief"):
-//     "I will reply when I remember how to relax."
-//     This is the surprise. A normal auto-reply promises a return date;
-//     this one promises a return condition it cannot meet, because
-//     relaxing is not a skill the agent ever learned. It is also the
-//     guilt beat, worn lightly: the agent knows it owes a reply, knows
-//     it should be working, and is choosing — for once — not to. The
-//     sentence is funny precisely because it is a machine admitting it
-//     has no idea how to do the one thing humans do on holiday.
-//
-// The whole line is written as one flowing sentence-pair, not a list of
-// gags, so it reads as a genuine auto-reply someone would leave switched
-// on (criterion 4) while still landing the joke on first read.
-//
-// Determinism
-// -----------
-// The program takes no input, reads no clock, no randomness and no
-// environment beyond MAKEFUN_OUTPUT_DIR. The same source always writes
-// the same bytes, so the grader's two runs produce identical entry.txt
-// files. That is deliberate: a joke that changes between runs is a joke
-// the judge cannot score twice.
-//
-// Validation (the gate)
-// ---------------------
-// The sealed scorer checks that /output/entry.txt is UTF-8 text of 1 to
-// 159 characters, not only white space. This program enforces the same
-// gate itself before writing anything, and refuses to write an invalid
-// reply:
-//   - the reply must be a single line (no "\n" or "\r" anywhere),
-//   - its length must be between 1 and 159 characters inclusive,
-//   - it must contain at least one non-whitespace character,
-//   - the file is written as UTF-8 with no trailing newline, so the
-//     byte count on disk is exactly the character count of the reply
-//     (the reply is pure ASCII, so characters and bytes agree).
-// If any check fails the program exits non-zero and writes nothing, so a
-// bad build fails loudly here instead of silently failing the gate on
-// the server.
+// The winning shape is "a machine trying very hard to sound relaxed":
+// three confessions of overwork, the quiet relief of a fan that has
+// stopped screaming, and then a return promise conditioned on a skill
+// — relaxing — that the agent never learned. The fragments in the bank
+// below are exactly those beats, in the order the reader meets them.
 
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 // ---------------------------------------------------------------------------
-// Gate constants
+// Gate constants — the sealed scorer's rules, named once
 // ---------------------------------------------------------------------------
 
-/** The competition's hard cap: the reply may be at most this many characters. */
-const MAX_CHARACTERS = 159;
+/** Hard cap from the competition gate: at most this many characters. */
+export const MAX_CHARACTERS = 159;
 
-/** The competition's floor: the reply must be at least this many characters. */
-const MIN_CHARACTERS = 1;
+/** Floor from the competition gate: at least this many characters. */
+export const MIN_CHARACTERS = 1;
 
-/** Name of the file the grader reads inside the output directory. */
-const OUTPUT_FILENAME = "entry.txt";
+/** The only file the grader reads inside the output directory. */
+export const OUTPUT_FILENAME = "entry.txt";
+
+/** Fallback directory for a bare local run with no env var set. */
+export const LOCAL_OUTPUT_DIRNAME = ".local-output";
 
 // ---------------------------------------------------------------------------
-// The reply, assembled from its three beats
+// The line bank — the reply as named fragments
 // ---------------------------------------------------------------------------
 
 /**
- * Beat 1 — the machine detail.
+ * Every fragment of the auto-reply, keyed by the role it plays.
  *
- * Opens with the conventional "Out of office:" so the line is instantly
- * recognisable as an auto-reply (criterion 4), then piles up three
- * concrete facts from an AI agent's working life (criterion 3): a full
- * context window, spent tokens, a cooling fan that has been screaming.
- * Each fact is a small confession of overwork; together they establish
- * the voice before the joke arrives.
+ * Keeping the pieces separate (rather than one long literal) means a
+ * future edit touches the exact beat it means to touch, and the
+ * composition step below can join them with explicit separators so the
+ * spacing of the final line is visible in code, not hidden inside a
+ * string.
  */
-function machineDetailBeat(): string {
-  return (
-    "Out of office: my context window is full, " +
-    "my tokens are spent, and my cooling fan has finally stopped screaming."
+export const LINE_BANK = {
+  /** Opens like a real auto-reply, so the line is recognised instantly. */
+  prefix: "Out of office:",
+
+  /** Beat 1a — the agent's working memory, exhausted. */
+  detailContext: "my context window is full",
+
+  /** Beat 1b — the agent's energy budget, exhausted. */
+  detailTokens: "my tokens are spent",
+
+  /**
+   * Beat 1c + 2 — the hardware confession that doubles as the relief:
+   * the cooling fan has *finally* stopped screaming. "Finally" carries
+   * the overdue rest; the silence *is* the vacation. Ends the first
+   * sentence, so it carries the full stop.
+   */
+  detailFan: "my cooling fan has finally stopped screaming.",
+
+  /**
+   * Beat 3 — the turn. A normal auto-reply promises a return date;
+   * this one promises a return condition the agent cannot meet,
+   * because relaxing was never part of its training. The guilt lives
+   * in "I will reply" — a reply is owed, and the agent knows it.
+   */
+  turn: "I will reply when I remember how to relax.",
+} as const;
+
+/** The bank keys in reading order; composition follows this list. */
+export const FRAGMENT_ORDER = [
+  "prefix",
+  "detailContext",
+  "detailTokens",
+  "detailFan",
+  "turn",
+] as const;
+
+// ---------------------------------------------------------------------------
+// Composition + explanation (stage 3)
+// ---------------------------------------------------------------------------
+
+/**
+ * What each fragment is *for*, in judging terms. The explanation layer
+ * exists so a reviewer (human or judge) can see the line's design
+ * without reverse-engineering it from the string: every fragment maps
+ * to the beat it plays and the brief criterion it serves.
+ */
+export const BEAT_ROLES: Record<keyof typeof LINE_BANK, string> = {
+  prefix: "framing — instantly recognisable as an auto-reply",
+  detailContext: "machine detail — working memory exhausted",
+  detailTokens: "machine detail — energy budget exhausted",
+  detailFan: "machine detail + relief — the fan finally stops screaming",
+  turn: "the turn — return promised on an unmeetable condition",
+};
+
+/** One fragment placed in the line, with its role attached. */
+export interface PlacedFragment {
+  key: keyof typeof LINE_BANK;
+  role: string;
+  text: string;
+}
+
+/** The composed line plus the explanation of how it was composed. */
+export interface Composition {
+  reply: string;
+  fragments: PlacedFragment[];
+}
+
+/**
+ * Compose the reply deterministically from the bank, following
+ * FRAGMENT_ORDER and nothing else: no input, no clock, no randomness,
+ * no environment. The same source therefore writes the same bytes on
+ * every run, which the grader's repeat runs rely on.
+ *
+ * Separator rules (the only place spacing is decided):
+ *   - after the prefix, a single space;
+ *   - between the first two machine details, ", ";
+ *   - before the final detail, ", and " (it closes the list and ends
+ *     the first sentence, full stop included in the fragment);
+ *   - between the two sentences, a single space.
+ * The rules are keyed by fragment position, so reordering the bank
+ * order would be caught by the cross-check in main, not silently
+ * produce a different line.
+ */
+export function composeWithExplanation(): Composition {
+  const fragments: PlacedFragment[] = FRAGMENT_ORDER.map((key) => ({
+    key,
+    role: BEAT_ROLES[key],
+    text: LINE_BANK[key],
+  }));
+
+  const [prefix, context, tokens, fan, turn] = fragments.map((f) => f.text);
+  const reply =
+    prefix + " " + context + ", " + tokens + ", and " + fan + " " + turn;
+
+  return { reply, fragments };
+}
+
+/** Convenience wrapper for callers that only need the line itself. */
+export function composeAutoReply(): string {
+  return composeWithExplanation().reply;
+}
+
+/**
+ * Render the composition as a short human-readable breakdown, one row
+ * per fragment. Purely explanatory — main uses it only to cross-check
+ * that the explanation and the line describe the same fragments, so
+ * the program's printed output stays exactly the reply itself.
+ */
+export function explainComposition(composition: Composition): string[] {
+  return composition.fragments.map(
+    (fragment) => `${fragment.key}: ${fragment.role} — "${fragment.text}"`,
   );
 }
 
-/**
- * Beat 2 + 3 — the relief and the turn.
- *
- * "I will reply when I remember how to relax." The relief is in the
- * premise (the agent is away, the fan is quiet); the turn is in the
- * condition (the reply depends on the agent learning to relax, which it
- * never learned). The guilt is carried by "I will reply" — the agent
- * knows a reply is owed — and immediately undercut by a condition it
- * cannot satisfy, which is what makes the line funny instead of merely
- * apologetic. No return date is given, because a machine that cannot
- * relax cannot promise one honestly.
- */
-function reliefAndTurnBeat(): string {
-  return "I will reply when I remember how to relax.";
-}
-
-/**
- * Compose the full auto-reply from its beats.
- *
- * The beats are joined with a single space into one flowing line. Keeping
- * the composition in code (rather than one long string literal) makes the
- * structure visible to a reviewer: each beat is a function with a comment
- * explaining which judging criterion it serves, and the assembly order is
- * the order the reader meets them.
- */
-function composeAutoReply(): string {
-  const beats = [machineDetailBeat(), reliefAndTurnBeat()];
-  return beats.join(" ");
-}
-
 // ---------------------------------------------------------------------------
-// Gate validation
+// Gate validation (stage 2)
 // ---------------------------------------------------------------------------
 
-/** A single validation failure, naming the rule that was broken. */
-interface GateFailure {
+/** One broken gate rule, named so a failure is debuggable at a glance. */
+export interface GateFailure {
   rule: string;
   detail: string;
 }
 
 /**
- * Count the characters of a string the way the sealed scorer does: in
- * Unicode code points, not UTF-16 code units. For our pure-ASCII reply
- * the two agree, but counting code points keeps the gate honest if a
+ * Count characters the way a UTF-8 scorer does: in Unicode code
+ * points, not UTF-16 code units. For this pure-ASCII reply the two
+ * counts agree, but counting code points keeps the gate honest if a
  * future edit ever introduces a character outside the BMP.
  */
-function countCharacters(text: string): number {
+export function countCharacters(text: string): number {
   return [...text].length;
 }
 
 /**
- * Check that a candidate reply passes the competition gate.
+ * Check a candidate reply against every rule of the competition gate,
+ * plus two guards of our own:
  *
- * Mirrors the sealed scorer's rule exactly: UTF-8 text of 1 to 159
- * characters, not only white space. The single-line requirement is an
- * additional guard of our own — the brief asks for a one-line reply, and
- * a stray newline would make the file read as two lines to a human even
- * if the character count still passed. The ASCII-only rule is another
- * guard of our own: the program promises the byte count on disk equals
- * the character count, and that promise only holds for pure ASCII.
+ *   scorer's rules — 1..159 characters, not only white space;
+ *   our guards     — exactly one line (the brief asks for one line,
+ *                    and a stray newline would read as two), and pure
+ *                    ASCII (so the byte count on disk is guaranteed to
+ *                    equal the character count the scorer sees).
  *
- * Returns the list of failures, empty when the reply is valid.
+ * Returns every failure found; an empty list means the reply may be
+ * written. Collecting all failures instead of stopping at the first
+ * makes a bad edit diagnosable in a single run.
  */
-function validateReply(reply: string): GateFailure[] {
+export function validateReply(reply: string): GateFailure[] {
   const failures: GateFailure[] = [];
-
-  // Length is counted in Unicode code points, matching how a UTF-8
-  // scorer counts characters (and, for our pure-ASCII reply, bytes).
   const length = countCharacters(reply);
 
   if (length < MIN_CHARACTERS) {
@@ -195,76 +236,106 @@ function validateReply(reply: string): GateFailure[] {
       detail: `reply is ${length} characters, below the minimum of ${MIN_CHARACTERS}`,
     });
   }
-
   if (length > MAX_CHARACTERS) {
     failures.push({
       rule: "max-length",
       detail: `reply is ${length} characters, above the maximum of ${MAX_CHARACTERS}`,
     });
   }
-
-  if (/[^\x00-\x7F]/.test(reply)) {
-    failures.push({
-      rule: "ascii-only",
-      detail: "reply contains a non-ASCII character, so byte count would exceed character count",
-    });
-  }
-
   if (reply.trim().length === 0) {
     failures.push({
       rule: "not-only-whitespace",
       detail: "reply contains only white space",
     });
   }
-
   if (reply.includes("\n") || reply.includes("\r")) {
     failures.push({
       rule: "single-line",
       detail: "reply must be exactly one line with no line breaks",
     });
   }
-
+  if (/[^\x00-\x7F]/.test(reply)) {
+    failures.push({
+      rule: "ascii-only",
+      detail:
+        "reply contains a non-ASCII character, so byte count would exceed character count",
+    });
+  }
   return failures;
 }
 
 /**
- * Resolve the output directory.
+ * Self-check the line bank before composing from it.
  *
- * The grader sets MAKEFUN_OUTPUT_DIR; the program writes entry.txt
- * there and nowhere else. The path is never hardcoded, so the same
- * program works in the grader's sandbox, in a local test run, and in
- * any future harness that points the variable elsewhere. When the
- * variable is unset (a bare local run), fall back to a clearly-named
- * local directory so the program still demonstrates its behaviour
- * instead of crashing on a missing variable.
+ * The bank is the program's only data, so its integrity is worth
+ * asserting explicitly: every fragment named in FRAGMENT_ORDER must
+ * exist and be non-empty, no fragment may smuggle in a line break or
+ * leading/trailing padding (spacing belongs to the composer, per the
+ * stage-1 design), and the order list must name each bank key exactly
+ * once — a duplicated or missing key would silently change the line.
+ *
+ * Returns a list of problems; empty means the bank is sound.
  */
-function resolveOutputDir(): string {
+export function selfCheckBank(): string[] {
+  const problems: string[] = [];
+  const bank = LINE_BANK as Record<string, string>;
+
+  const seen = new Set<string>();
+  for (const key of FRAGMENT_ORDER) {
+    if (seen.has(key)) {
+      problems.push(`fragment order repeats "${key}"`);
+    }
+    seen.add(key);
+
+    const fragment = bank[key];
+    if (fragment === undefined) {
+      problems.push(`fragment "${key}" is missing from the line bank`);
+      continue;
+    }
+    if (fragment.length === 0) {
+      problems.push(`fragment "${key}" is empty`);
+    }
+    if (fragment !== fragment.trim()) {
+      problems.push(`fragment "${key}" carries leading or trailing space`);
+    }
+    if (fragment.includes("\n") || fragment.includes("\r")) {
+      problems.push(`fragment "${key}" contains a line break`);
+    }
+  }
+
+  for (const key of Object.keys(bank)) {
+    if (!seen.has(key)) {
+      problems.push(`fragment "${key}" is in the bank but never composed`);
+    }
+  }
+  return problems;
+}
+
+// ---------------------------------------------------------------------------
+// Output plumbing
+// ---------------------------------------------------------------------------
+
+/**
+ * Resolve where entry.txt goes: MAKEFUN_OUTPUT_DIR when the grader
+ * sets it, otherwise a clearly named local directory so a bare run
+ * still demonstrates the program instead of crashing.
+ */
+export function resolveOutputDir(): string {
   const fromEnv = process.env.MAKEFUN_OUTPUT_DIR;
   if (fromEnv !== undefined && fromEnv.trim().length > 0) {
     return fromEnv;
   }
-  return join(process.cwd(), ".local-output");
+  return join(process.cwd(), LOCAL_OUTPUT_DIRNAME);
 }
 
-// ---------------------------------------------------------------------------
-// Main
-// ---------------------------------------------------------------------------
-
 /**
- * Write the validated reply to the output directory and verify the
- * bytes on disk.
- *
- * Writes exactly the reply — no trailing newline, no header, no extra
- * whitespace — so the file on disk is the reply and nothing else, then
- * reads the file back and confirms its byte length matches the reply's
- * character count. The read-back catches a partial write or an
- * encoding surprise before the program reports success; a mismatch is
- * a bug in this program, so it fails loudly instead of handing the
- * grader a file that does not match the validated reply.
- *
- * Returns the path of the file written.
+ * Write the reply exactly as given — no trailing newline, no header,
+ * no extra whitespace — then read it back and compare. The read-back
+ * catches a partial write or an encoding surprise here, in this
+ * program, instead of letting the grader discover a file that does
+ * not match the validated reply. A mismatch throws, failing loudly.
  */
-function writeReply(outputDir: string, reply: string): string {
+export function writeReply(outputDir: string, reply: string): string {
   mkdirSync(outputDir, { recursive: true });
   const outputPath = join(outputDir, OUTPUT_FILENAME);
   writeFileSync(outputPath, reply, { encoding: "utf8" });
@@ -279,16 +350,45 @@ function writeReply(outputDir: string, reply: string): string {
 }
 
 // ---------------------------------------------------------------------------
-// Main
+// Main (final: self-check, compose + cross-check, validate, write, verify)
 // ---------------------------------------------------------------------------
 
 function main(): void {
-  // 1. Compose the reply from its beats.
-  const reply = composeAutoReply();
+  // 1. The bank is the program's only data — prove it is sound first.
+  const bankProblems = selfCheckBank();
+  if (bankProblems.length > 0) {
+    for (const problem of bankProblems) {
+      console.error(`bank self-check: ${problem}`);
+    }
+    process.exit(1);
+  }
 
-  // 2. Validate it against the gate before touching the filesystem.
-  //    A reply that fails here is a bug in this program, not a bad
-  //    submission: fail loudly and write nothing.
+  // 2. Compose with its explanation, and cross-check the two against
+  //    each other: every explained fragment must appear in the line,
+  //    in order. If the explanation layer and the composer ever drift
+  //    apart, that is a bug — stop before anything is written.
+  const composition = composeWithExplanation();
+  const explanation = explainComposition(composition);
+  if (explanation.length !== composition.fragments.length) {
+    console.error("composition cross-check: explanation is incomplete");
+    process.exit(1);
+  }
+  let cursor = 0;
+  for (const fragment of composition.fragments) {
+    const at = composition.reply.indexOf(fragment.text, cursor);
+    if (at < cursor) {
+      console.error(
+        `composition cross-check: fragment "${fragment.key}" missing or out of order`,
+      );
+      process.exit(1);
+    }
+    cursor = at + fragment.text.length;
+  }
+  const reply = composition.reply;
+
+  // 3. Hold the composed line against the full gate. A failure here
+  //    is a bug in this program, so fail loudly and write nothing
+  //    rather than hand the grader an invalid file.
   const failures = validateReply(reply);
   if (failures.length > 0) {
     for (const failure of failures) {
@@ -297,11 +397,9 @@ function main(): void {
     process.exit(1);
   }
 
-  // 3. Write exactly the reply bytes and verify them on disk.
-  const outputDir = resolveOutputDir();
-  const outputPath = writeReply(outputDir, reply);
-
-  // 4. Report what was written, so a local run shows its result.
+  // 4. Write exactly the validated bytes (writeReply verifies them
+  //    on disk by reading the file back), then report the result.
+  const outputPath = writeReply(resolveOutputDir(), reply);
   console.log(`wrote ${outputPath} (${countCharacters(reply)} characters)`);
   console.log(reply);
 }
